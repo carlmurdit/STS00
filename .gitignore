@@ -1,0 +1,4 @@
+
+# ignore large files
+
+*_word_vectors.txt
