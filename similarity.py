@@ -69,8 +69,10 @@ nyt_sim = Sim('nyt_words.txt', 'nyt_word_vectors.txt')
 wiki_sim = Sim('wikipedia_words.txt', 'wikipedia_word_vectors.txt')
 
 def fix_compounds(a, b):
+    # create a set of unique words in the 2nd sentence
     sb = set(x.lower() for x in b)
 
+    # if compound in 1st sentence replace it (e.g. pay day becomes payday)
     a_fix = []
     la = len(a)
     i = 0
@@ -85,8 +87,18 @@ def fix_compounds(a, b):
         i += 1
     return a_fix
 
+
 def load_data(path):
-    sentences_pos = []
+    """
+    :param path: str The filename
+    :return: list(list(tuple(str, str)), list(tuple(str, str)))
+
+        i.e. for each sentence_pair
+            sentence_a(word, POS_tag), sentence_b(word, POS_tag)
+    """
+
+    sentences_pos = [] # initialise an empty list
+    # remove <>, replace $US with $ in currencies
     r1 = re.compile(r'\<([^ ]+)\>')
     r2 = re.compile(r'\$US(\d)')
     for l in open(path):
@@ -101,20 +113,30 @@ def load_data(path):
         l = l.replace(u"/", " ")
         l = r1.sub(r'\1', l)
         l = r2.sub(r'$\1', l)
-        s = l.strip().split('\t')
+        s = l.strip().split('\t') # unused?
+
+        # tokenise
         sa, sb = tuple(nltk.word_tokenize(s)
                           for s in l.strip().split('\t'))
         sa, sb = ([x.encode('utf-8') for x in sa],
                   [x.encode('utf-8') for x in sb])
 
+        # replace contractions
         for s in (sa, sb):
             for i in xrange(len(s)):
                 if s[i] == "n't":
                     s[i] = "not"
                 elif s[i] == "'m":
                     s[i] = "am"
+
+        # if a compound in one, use it, e.g. pay day becomes payday
         sa, sb = fix_compounds(sa, sb), fix_compounds(sb, sa)
+
+        # POS Tagging
+        #   pos_tag() creates a list(tuple(str, str)) for each sentence
+        #       e.g. [('They', 'PRP'), ('refuse', 'VBP'), ('us', 'PRP')]
         sentences_pos.append((nltk.pos_tag(sa), nltk.pos_tag(sb)))
+
     return sentences_pos
 
 def load_wweight_table(path):
@@ -147,15 +169,42 @@ to_wordnet_tag = {
 
 word_matcher = re.compile('[^0-9,.(=)\[\]/_`]+$')
 def is_word(w):
+    # true if only contains alpha characters
     return word_matcher.match(w) is not None
 
+# Params
+#   spos, list
+# Returns
+#   list
 def get_locase_words(spos):
+    # return lower case, excluding non-words
     return [x[0].lower() for x in spos
             if is_word(x[0])]
 
 def make_ngrams(l, n):
+    """
+    :param l: List[str] A sentence
+    :param n: int n-gram size
+    :return: List[Tuple[str1, .... str_n]]
+
+        e.g. if n==3, [('a', 'b', 'c'), ('b', 'c', 'd'), ('c', 'd', 'e')]
+    """
+
+    # e.g. if n == 3
+    #   xrange(2) == 0,1
+    #   a[start:end] is items start through end-1
+    #   if end is -ve, it counts from the end of the array
+    #       l[0:-3+0+1] == l[0:-2] == from 0 to last-2
+    #       l[1:-3+1+1] == l[1:-1] == from 0 to last-1
     rez = [l[i:(-n + i + 1)] for i in xrange(n - 1)]
+
+    # a[start:] means from start through to end of array
+    # e.g. if n == 3
+    #   rez.append(l[3-1:]) == rez.append(l[2:]) == starting c
     rez.append(l[n - 1:])
+
+    # zip() converts n lists into a list of n-tuples
+    # each list was created starting at a later point
     return zip(*rez)
 
 def dist_sim(sim, la, lb):
@@ -191,9 +240,18 @@ def weighted_word_match(lca, lcb):
     f1 = 2 * p * r / (p + r) if p + r > 0 else 0.
     return f1
 
-wpathsimcache = {}
+wpathsimcache = {} # dictionary of scores already calculated Dict{Tuple(word_a, word_b), score}
 def wpathsim(a, b):
+    """
+    :param a: a word
+    :param b: a word
+    :return: float, a similarity score
+
+    Generates a similarity score using WordNet
+    """
+
     if a > b:
+        # uses alphabetical order, to match any cached pairs
         b, a = a, b
     p = (a, b)
     if p in wpathsimcache:
@@ -201,8 +259,10 @@ def wpathsim(a, b):
     if a == b:
         wpathsimcache[p] = 1.
         return 1.
+    # Get all synsets for word a and word b (polysemous words will have more than one synset)
     sa = wordnet.synsets(a)
     sb = wordnet.synsets(b)
+    # Choose the synsets that have the closest similarity
     mx = max([wa.path_similarity(wb)
               for wa in sa
               for wb in sb
@@ -211,6 +271,14 @@ def wpathsim(a, b):
     return mx
 
 def calc_wn_prec(lema, lemb):
+    """
+    :param lema: List[str], lemmas of sentence a
+    :param lema: List[str], lemmas of sentence b
+    :return: int or float, a similarity score
+
+    Generates a similarity score using WordNet
+    """
+
     rez = 0.
     for a in lema:
         ms = 0.
@@ -220,6 +288,14 @@ def calc_wn_prec(lema, lemb):
     return rez / len(lema)
 
 def wn_sim_match(lema, lemb):
+    """
+    :param lema: List[str], lemmas of sentence a
+    :param lema: List[str], lemmas of sentence b
+    :return: int or float, a similarity score
+
+    Generates a similarity score using WordNet
+    """
+
     f1 = 1.
     p = 0.
     r = 0.
@@ -230,41 +306,74 @@ def wn_sim_match(lema, lemb):
     return f1
 
 def ngram_match(sa, sb, n):
+    """
+    :param sa: List[str], words in a
+    :param sb: List[str], words in b
+    :param n: int, n-gram size
+    :return: int or float, a similarity score
+    """
+
     nga = make_ngrams(sa, n)
     ngb = make_ngrams(sb, n)
     matches = 0
+
+    # A Counter keeps track of how many times each word is found in Sentence a
     c1 = Counter(nga)
     for ng in ngb:
         if c1[ng] > 0:
+            # if word in an n-gram of b found in an n-gram of a
+            # remove word from counter so it isn't matched again if Sentence b has the word twice
             c1[ng] -= 1
             matches += 1
     p = 0.
     r = 0.
     f1 = 1.
     if len(nga) > 0 and len(ngb) > 0:
-        p = matches / float(len(nga))
-        r = matches / float(len(ngb))
+        p = matches / float(len(nga)) # ratio of words in a that match b
+        r = matches / float(len(ngb)) # ratio of words in b that match a
         f1 = 2 * p * r / (p + r) if p + r > 0 else 0.
     return f1
 
 def get_lemmatized_words(sa):
+    """
+    :param sa: List[Tuple(str,str)], a list of words with their POS
+    :return: List[str], a list of lemmas (POS info is discarded)
+    """
     rez = []
     for w, wpos in sa:
+
         w = w.lower()
         if w in stopwords or not is_word(w):
             continue
+
+        # convert POS to WordNet tag (2nd of tuple), e.g. 'NN' becomes wordnet.NOUN
         wtag = to_wordnet_tag.get(wpos[:2])
         if wtag is None:
+            # if no POS tag, the lemma is the unchanged word
             wlem = w
         else:
+            # Look up forms not in WordNet, with the help of Morphy (www.nltk.org/howto/wordnet.html)
+            # wn.morphy('denied', wn.VERB) returns deny
             wlem = wordnet.morphy(w, wtag) or w
         rez.append(wlem)
+
+    # return a list of lemmas (POS info is discarded)
     return rez
 
 def is_stock_tick(w):
     return w[0] == '.' and len(w) > 1 and w[1:].isupper()
 
 def stocks_matches(sa, sb):
+    """
+    :param sa: List[str], a list of words in a
+    :param sb: List[str], a list of words in b
+    :return: Tuple[float, float]
+
+        a log of counts of stock tokens found in both
+
+        a similarity score (1 means every stock id is in both)
+    """
+
     ca = set(x[0] for x in sa if is_stock_tick(x[0]))
     cb = set(x[0] for x in sb if is_stock_tick(x[0]))
     isect = len(ca.intersection(cb))
@@ -279,6 +388,8 @@ def stocks_matches(sa, sb):
             f = 2 * p * r / (p + r)
         else:
             f = 0.
+
+    f += case_matches(sa, sb)
     return (len_compress(la + lb), f)
 
 def case_matches(sa, sb):
@@ -298,9 +409,15 @@ def case_matches(sa, sb):
             f = 2 * p * r / (p + r)
         else:
             f = 0.
+
+    # return a 2-tuple
+    #       len_compress() uses log of counts of capitalised tokens found in the pair
+    #       f is a similarity score (1 for any capitised words are in both)
     return (len_compress(la + lb), f)
 
+# regex for checking if it excludes numeric characters
 risnum = re.compile(r'^[0-9,./-]+$')
+# regex for checking if it contains a digit
 rhasdigit = re.compile(r'[0-9]')
 
 def match_number(xa, xb):
@@ -336,11 +453,25 @@ def match_number(xa, xb):
     return False
 
 def number_features(sa, sb):
+    """
+    :param sa: List[str], a list of words in a
+    :param sb: List[str], a list of words in b
+    :return: Tuple[float, float, float]
+
+      a log of counts of numbers in the pair
+
+      a similarity score (1 for every number is in both)
+
+      subset: 1 if all numbers matched, else 0
+    """
+
+    # create a set of the numeric tokens in each sentence
     numa = set(x[0] for x in sa if risnum.match(x[0]) and
             rhasdigit.match(x[0]))
     numb = set(x[0] for x in sb if risnum.match(x[0]) and
             rhasdigit.match(x[0]))
-    isect = 0
+
+    isect = 0  # counter for numbers found in both sentences
     for na in numa:
         if na in numb:
             isect += 1
@@ -350,19 +481,28 @@ def number_features(sa, sb):
                 isect += 1
                 break
 
+    # count the numeric tokens for each sentence
     la, lb = len(numa), len(numb)
 
     f = 1.
     subset = 0.
     if la + lb > 0:
         if isect == la or isect == lb:
+            # if all number in a or b are matched
             subset = 1.
         if isect > 0:
+            # some match, some don't; use % of each sentence matched
             p = float(isect) / la
             r = float(isect) / lb
             f = 2. * p * r / (p + r)
         else:
+            # no matches
             f = 0.
+
+    # return a 3-tuple
+    #   len_compress() uses log of counts of numbers in the pair
+    #   f is a similarity score (1 for any numbers are in both)
+    #   subset is 1 if all numbers matched, else 0
     return (len_compress(la + lb), f, subset)
 
 def relative_len_difference(lca, lcb):
@@ -377,19 +517,39 @@ def relative_ic_difference(lca, lcb):
     return abs(wa - wb) / (max(wa, wb) + 1e-5)
 
 def calc_features(sa, sb):
+    """
+    :param sa: List[str] Sentence a
+    :param sb: List[str] Sentence b
+    :return: List[] a list of features for the sentence pair instance
+
+    Generates features using various similarity measures
+    """
+    # get lower case, excluding non-words
     olca = get_locase_words(sa)
     olcb = get_locase_words(sb)
+
+    # remove stopwords
     lca = [w for w in olca if w not in stopwords]
     lcb = [w for w in olcb if w not in stopwords]
+
+    # get_lemmatized_words() returns a list of lemmas (POS info is discarded)
     lema = get_lemmatized_words(sa)
     lemb = get_lemmatized_words(sb)
 
+    # create a list of features for each pair
     f = []
+
+    # number_features() returns Tuple[float, float, float]
     f += number_features(sa, sb)
+
+    # case_matches() returns Tuple[float, float]
     f += case_matches(sa, sb)
+
+    # stocks_matches() returns Tuple[float, float]
     f += stocks_matches(sa, sb)
+
     f += [
-            ngram_match(lca, lcb, 1),
+            ngram_match(lca, lcb, 1),  # make features from n-gram matches
             ngram_match(lca, lcb, 2),
             ngram_match(lca, lcb, 3),
             ngram_match(lema, lemb, 1),
@@ -409,6 +569,9 @@ def calc_features(sa, sb):
     return f
 
 if __name__ == "__main__":
+    # verify 1 (for test) or 2 (for train) parameters present, e.g.
+    # python takelab_simple_features.py train/STS.input.MSRvid.txt train/STS.gs.MSRvid.txt > msrvid-train.txt
+    # python takelab_simple_features.py test/STS.input.MSRvid.txt > msrvid-test.txt
     if len(sys.argv) != 2 and len(sys.argv) != 3:
         print >>sys.stderr, "Usage: "
         print >>sys.stderr, "  %s input.txt [scores.txt]" % sys.argv[0]
@@ -416,9 +579,19 @@ if __name__ == "__main__":
 
     scores = None
     if len(sys.argv) >= 3:
+        # read gold standard file if training a model
         scores = [float(x) for x in open(sys.argv[2])]
 
+    # load_data() returns a list(list(tuple(str, str)), list(tuple(str, str)))
+    #   i.e. for each <sentence pair>
+    #       (sentence_A<word, POS_tag>, sentence_A<word, POS_tag>)
+    # enumerate() returns tuples (index, value) obtained from an iterable.
     for idx, sp in enumerate(load_data(sys.argv[1])):
+
+        # if gold standard file supplied, merge it with the training data, else use 0
         y = 0. if scores is None else scores[idx]
+
+        # print gold standard, 1-based index and x (the numbered features) for each pair
+        # 5.0 1:0.000000 2:1.000000 3:0.000000 4:0.000000 5:1.000000 6:0.000000 ... 20:0.000000 21:0.005196
         print y, ' '.join('%d:%f' % (i + 1, x) for i, x in
-                          enumerate(calc_features(*sp)))# if x)
+                          enumerate(calc_features(*sp)))  # if x)
