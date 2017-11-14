@@ -41,11 +41,20 @@ from numpy.linalg import norm
 
 class Sim:
     def __init__(self, words, vectors):
+        """
+        :param words: 'nyt_words.txt'
+        :param vectors: 'nyt_word_vectors.txt'
+        """
         self.word_to_idx = {a: b for b, a in
                             enumerate(w.strip() for w in open(words))}
         self.mat = numpy.loadtxt(vectors)
 
     def bow_vec(self, b):
+        """
+        Generate a bag-of-words matrix
+        :param b:
+        :return:
+        """
         vec = numpy.zeros(self.mat.shape[1])
         for k, v in b.iteritems():
             idx = self.word_to_idx.get(k, -1)
@@ -56,7 +65,7 @@ class Sim:
     def calc(self, b1, b2):
         v1 = self.bow_vec(b1)
         v2 = self.bow_vec(b2)
-        return abs(v1.dot(v2) / (norm(v1) + 1e-8) / (norm(v2) + 1e-8))
+        return abs(v1.dot(v2) / (norm(v1) + 1e-8) / (norm(v2) + 1e-8)) # normalise vectors
 
 stopwords = set([
 "i", "a", "about", "an", "are", "as", "at", "be", "by", "for", "from",
@@ -140,20 +149,31 @@ def load_data(path):
     return sentences_pos
 
 def load_wweight_table(path):
+    """
+    :param path: str the filename ('word-frequencies.txt')
+    :param n: int n-gram size
+    :return: defaultdict[str,float]
+
+    Uses Google Books Ngrams to get words and frequency (e.g. they 65081886).
+    See http://takelab.fer.hr/sts/
+    """
+
     lines = open(path).readlines()
-    wweight = defaultdict(float)
+    wweight = defaultdict(float) # create Dict with the word as the key
     if not len(lines):
-        return (wweight, 0.)
+        return (wweight, 0.) # default to 0 if file is empty
     totfreq = int(lines[0])
     for l in lines[1:]:
         w, freq = l.split()
         freq = float(freq)
         if freq < 10:
-            continue
+            continue # skip rare words
         wweight[w] = math.log(totfreq / freq)
 
     return wweight
 
+# At program initialisation, look up the information content of words in the test set
+# calculated from  Google Books Ngrams
 wweight = load_wweight_table('word-frequencies.txt')
 minwweight = min(wweight.values())
 
@@ -172,12 +192,14 @@ def is_word(w):
     # true if only contains alpha characters
     return word_matcher.match(w) is not None
 
-# Params
-#   spos, list
-# Returns
-#   list
 def get_locase_words(spos):
-    # return lower case, excluding non-words
+    """
+    :param spos: list[tuple[str,str]] - A list of tuple[word, POS]
+    :return: list[str]
+
+    convert to lower case, excluding non-words and discarding POS info
+    """
+
     return [x[0].lower() for x in spos
             if is_word(x[0])]
 
@@ -208,6 +230,12 @@ def make_ngrams(l, n):
     return zip(*rez)
 
 def dist_sim(sim, la, lb):
+    """
+    :param sim: an instance of class Sim (words and vectors)
+    :param la: a List[lemmas]
+    :param lb: a List[lemmas]
+    :return:
+    """
     wa = Counter(la)
     wb = Counter(lb)
     d1 = {x:1 for x in wa}
@@ -215,6 +243,12 @@ def dist_sim(sim, la, lb):
     return sim.calc(d1, d2)
 
 def weighted_dist_sim(sim, lca, lcb):
+    """
+    :param sim: an instance of class Sim (words and vectors)
+    :param lca: a List[lemmas]
+    :param lcb: a List[lemmas]
+    :return:
+    """
     wa = Counter(lca)
     wb = Counter(lcb)
     wa = {x: wweight[x] * wa[x] for x in wa}
@@ -222,6 +256,15 @@ def weighted_dist_sim(sim, lca, lcb):
     return sim.calc(wa, wb)
 
 def weighted_word_match(lca, lcb):
+    """
+    :param lca: List[str], non-lemmatised l-case words in a, stopwords included
+    :param lcb: List[str], non-lemmatised l-case words in b, stopwords included
+    :return: int or float, a similarity score
+
+    See section 'Weighted Word Overlap' - uses WordNet and information content (IC)
+    IC uses word-frequencies.txt generated from Google Books Ngrams
+    """
+
     wa = Counter(lca)
     wb = Counter(lcb)
     wsuma = sum(wweight[w] * wa[w] for w in wa)
@@ -231,12 +274,17 @@ def weighted_word_match(lca, lcb):
     for w in wa:
         wd = min(wa[w], wb[w])
         wsum += wweight[w] * wd
+
     p = 0.
     r = 0.
     if wsuma > 0 and wsum > 0:
         p = wsum / wsuma
     if wsumb > 0 and wsum > 0:
         r = wsum / wsumb
+
+    # Weighted Word Coverage, wwc(sent1, sent2) is the ratio of co-occurring words to words in sent2, weighted by IC
+    # Weighted Word Overlap is the harmonic mean of p, the wwc(sent1, sent2) and r, the wwc(sent2, sent1)
+    # The harmonic mean of precision and recall is the F1 measure (Kelleher p.476)
     f1 = 2 * p * r / (p + r) if p + r > 0 else 0.
     return f1
 
@@ -247,7 +295,7 @@ def wpathsim(a, b):
     :param b: a word
     :return: float, a similarity score
 
-    Generates a similarity score using WordNet
+    Generates a similarity score using WordNet's basic basic path_similarity() function, which doesn't use depth
     """
 
     if a > b:
@@ -255,37 +303,38 @@ def wpathsim(a, b):
         b, a = a, b
     p = (a, b)
     if p in wpathsimcache:
-        return wpathsimcache[p]
+        return wpathsimcache[p] # return cached score, if present
     if a == b:
         wpathsimcache[p] = 1.
         return 1.
     # Get all synsets for word a and word b (polysemous words will have more than one synset)
     sa = wordnet.synsets(a)
     sb = wordnet.synsets(b)
-    # Choose the synsets that have the closest similarity
+    # Choose the synsets that have the highest similarity
+    # Uses NLTK Synset class' basic path_similarity() function, which doesn't use depth
     mx = max([wa.path_similarity(wb)
               for wa in sa
               for wb in sb
               ] + [0.])
-    wpathsimcache[p] = mx
+    wpathsimcache[p] = mx # add to cache
     return mx
 
 def calc_wn_prec(lema, lemb):
     """
-    :param lema: List[str], lemmas of sentence a
-    :param lema: List[str], lemmas of sentence b
+    :param lema: list[str], lemmas of sentence a
+    :param lema: list[str], lemmas of sentence b
     :return: int or float, a similarity score
 
-    Generates a similarity score using WordNet
+    Generates a similarity score between lemmatised sentences using WordNet
     """
 
     rez = 0.
     for a in lema:
         ms = 0.
         for b in lemb:
-            ms = max(ms, wpathsim(a, b))
-        rez += ms
-    return rez / len(lema)
+            ms = max(ms, wpathsim(a, b)) # find the most similar lemma in lemb for the current lemma in lema
+        rez += ms # increment the score before moving on to the next lemma in lema
+    return rez / len(lema) # decrease the score in proportion to the length of lema
 
 def wn_sim_match(lema, lemb):
     """
@@ -293,7 +342,10 @@ def wn_sim_match(lema, lemb):
     :param lema: List[str], lemmas of sentence b
     :return: int or float, a similarity score
 
-    Generates a similarity score using WordNet
+    'WordNet-Augmented Word Overlap' - paper
+    Generates a similarity score between lemmatised sentences using WordNet.
+    Doesn't use Leacock & Chodorow or Lin measures as reported in their paper.
+    Compares lema to lemb, then lemb to lema and combines them using an undocumented weighting system.
     """
 
     f1 = 1.
@@ -311,6 +363,7 @@ def ngram_match(sa, sb, n):
     :param sb: List[str], words in b
     :param n: int, n-gram size
     :return: int or float, a similarity score
+    Creates n-grams, counts overlapping words
     """
 
     nga = make_ngrams(sa, n)
@@ -324,6 +377,7 @@ def ngram_match(sa, sb, n):
             # if word in an n-gram of b found in an n-gram of a
             # remove word from counter so it isn't matched again if Sentence b has the word twice
             c1[ng] -= 1
+            # increment the overlap counter
             matches += 1
     p = 0.
     r = 0.
@@ -506,6 +560,13 @@ def number_features(sa, sb):
     return (len_compress(la + lb), f, subset)
 
 def relative_len_difference(lca, lcb):
+    """
+    :param lca: lcase words in sent_a, without stopwords
+    :param lcb: lcase words in sent_b, without stopwords
+    :return: Float, a similarity score
+
+    Get ratio of sentence difference to the maximum sentence length
+    """
     la, lb = len(lca), len(lcb)
     return abs(la - lb) / float(max(la, lb) + 1e-5)
 
@@ -514,17 +575,17 @@ def relative_ic_difference(lca, lcb):
     #wb = sum(wweight[x] for x in lcb)
     wa = sum(max(0., wweight[x] - minwweight) for x in lca)
     wb = sum(max(0., wweight[x] - minwweight) for x in lcb)
-    return abs(wa - wb) / (max(wa, wb) + 1e-5)
+    return abs(wa - wb) / (max(wa, wb) + 1e-5) # sci notation: 1 * 10 ^ -5
 
 def calc_features(sa, sb):
     """
-    :param sa: List[str] Sentence a
-    :param sb: List[str] Sentence b
+    :param sa: List(Tuple(str, str)), Sentence a as List(word, POS_tag)
+    :param sb: List(Tuple(str, str)), Sentence b as List(word, POS_tag)
     :return: List[] a list of features for the sentence pair instance
 
     Generates features using various similarity measures
     """
-    # get lower case, excluding non-words
+    # convert to lower case, excluding non-words and discarding POS info
     olca = get_locase_words(sa)
     olcb = get_locase_words(sb)
 
@@ -532,41 +593,41 @@ def calc_features(sa, sb):
     lca = [w for w in olca if w not in stopwords]
     lcb = [w for w in olcb if w not in stopwords]
 
-    # get_lemmatized_words() returns a list of lemmas (POS info is discarded)
+    # get List(str) of lemmas discarding POS info
     lema = get_lemmatized_words(sa)
     lemb = get_lemmatized_words(sb)
 
     # create a list of features for each pair
     f = []
 
-    # number_features() returns Tuple[float, float, float]
+    # number_features() returns Tuple[float, float, float], i.e. 3 features
     f += number_features(sa, sb)
 
-    # case_matches() returns Tuple[float, float]
+    # case_matches() returns Tuple[float, float], i.e. 2 features
     f += case_matches(sa, sb)
 
-    # stocks_matches() returns Tuple[float, float]
+    # stocks_matches() returns Tuple[float, float], i.e. 2 features
     f += stocks_matches(sa, sb)
 
     f += [
-            ngram_match(lca, lcb, 1),  # make features from n-gram matches
+            ngram_match(lca, lcb, 1),  # make features from n-grams of words
             ngram_match(lca, lcb, 2),
             ngram_match(lca, lcb, 3),
-            ngram_match(lema, lemb, 1),
+            ngram_match(lema, lemb, 1), # make features from  n-grams of lemmas
             ngram_match(lema, lemb, 2),
             ngram_match(lema, lemb, 3),
-            wn_sim_match(lema, lemb),
-            weighted_word_match(olca, olcb),
+            wn_sim_match(lema, lemb), # 'WordNet-Augmented Word Overlap' finds synonyms in WordNet
+            weighted_word_match(olca, olcb), # 'Weighted Word Overlap' using WordNet and information content (IC)
             weighted_word_match(lema, lemb),
-            dist_sim(nyt_sim, lema, lemb),
+            dist_sim(nyt_sim, lema, lemb), # 200 dim word-vector mapping from New York Times Annotated Corpus (NYT)
             #dist_sim(wiki_sim, lema, lemb),
-            weighted_dist_sim(nyt_sim, lema, lemb),
-            weighted_dist_sim(wiki_sim, lema, lemb),
+            weighted_dist_sim(nyt_sim, lema, lemb), # word-vector mapping from NYT weighting with IC
+            weighted_dist_sim(wiki_sim, lema, lemb), # 500 dim word-vector mapping from Wikipedia weighting with IC
             relative_len_difference(lca, lcb),
             relative_ic_difference(olca, olcb)
         ]
 
-    return f
+    return f # 21 features total
 
 if __name__ == "__main__":
     # verify 1 (for test) or 2 (for train) parameters present, e.g.
@@ -583,8 +644,8 @@ if __name__ == "__main__":
         scores = [float(x) for x in open(sys.argv[2])]
 
     # load_data() returns a list(list(tuple(str, str)), list(tuple(str, str)))
-    #   i.e. for each <sentence pair>
-    #       (sentence_A<word, POS_tag>, sentence_A<word, POS_tag>)
+    #   i.e. for each sentence_pair
+    #       (sentence_A(word, POS_tag), sentence_A(word, POS_tag))
     # enumerate() returns tuples (index, value) obtained from an iterable.
     for idx, sp in enumerate(load_data(sys.argv[1])):
 
